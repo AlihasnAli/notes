@@ -6,27 +6,51 @@ KUBECTL_BIN="${KUBECTL_BIN:-kubectl}"
 PATH_ARG="."
 OUT=""
 STRICT=0
-declare -a VAR_LINES=()
+declare -a VARS=()   # collects -v key=value
 
 usage() {
   cat <<'USAGE'
 kme [path] -v key=value [-v key=value ...] [-o out.yaml] [-s]
   path         Path to kustomization (default: .)
-  -v key=value Provide a variable used as ${key} in manifests (repeatable)
+  -v key=value Provide a variable for ${key} in manifests (repeatable)
   -o FILE      Write output to FILE instead of stdout
   -s           Strict: error if any ${...} placeholder remains
-
-Example:
-  kme /overlay/dev -v namespace=my-namespace -v host=nulltix.com -o all.yaml
 USAGE
 }
 
-# Parse args
+# --- tiny escaping helpers (no awk) ---
+escape_regex() { # escape for sed regex
+  local s=$1
+  s=${s//\\/\\\\}
+  s=${s//./\\.}
+  s=${s//\*/\\*}
+  s=${s//^/\\^}
+  s=${s//\$/\\$}
+  s=${s//+/\\+}
+  s=${s//\?/\\?}
+  s=${s//\(/\\(}
+  s=${s//\)/\\)}
+  s=${s//[/\\[}
+  s=${s//]/\\]}
+  s=${s//\{/\\{}
+  s=${s//\}/\\}}
+  s=${s//|/\\|}
+  echo "$s"
+}
+escape_repl() { # escape for sed replacement
+  local s=$1
+  s=${s//\\/\\\\}
+  s=${s//&/\\&}
+  s=${s//|/\\|}
+  echo "$s"
+}
+
+# --- parse args ---
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
-    -v) shift; VAR_LINES+=("${1:?use -v key=value}") ;;
-    -v=*) VAR_LINES+=("${1#-v=}") ;;
+    -v) shift; VARS+=("${1:?use -v key=value}") ;;
+    -v=*) VARS+=("${1#-v=}") ;;
     -o) shift; OUT="${1:?use -o FILE}" ;;
     -o=*) OUT="${1#-o=}" ;;
     -s|--strict) STRICT=1 ;;
@@ -35,63 +59,44 @@ while [[ $# -gt 0 ]]; do
     *)
       if [[ "$PATH_ARG" == "." ]]; then PATH_ARG="$1"; else
         echo "Only one path allowed (got '$PATH_ARG' and '$1')." >&2; exit 2
-      fi
-      ;;
+      fi ;;
   esac
   shift || true
 done
 
-# Temps
-tmp_yaml="$(mktemp)"
-var_kv="$(mktemp)"
-dedup_kv="$(mktemp)"
-sed_script="$(mktemp)"
-trap 'rm -f "$tmp_yaml" "$var_kv" "$dedup_kv" "$sed_script"' EXIT
-
-# 1) Build manifests with kubectl kustomize
+# --- build with kubectl kustomize ---
 if ! command -v "$KUBECTL_BIN" >/dev/null 2>&1; then
   echo "ERROR: '$KUBECTL_BIN' not found in PATH." >&2
   exit 127
 fi
-"$KUBECTL_BIN" kustomize "$PATH_ARG" > "$tmp_yaml"
 
-# 2) Gather vars (last one wins)
-for kv in "${VAR_LINES[@]:-}"; do
+tmp_in="$(mktemp)"; tmp_out="$(mktemp)"
+trap 'rm -f "$tmp_in" "$tmp_out"' EXIT
+
+"$KUBECTL_BIN" kustomize "$PATH_ARG" > "$tmp_in"
+
+# --- apply each -v key=value ---
+for kv in "${VARS[@]:-}"; do
   [[ "$kv" == *"="* ]] || { echo "ERROR: -v expects key=value (got '$kv')" >&2; exit 2; }
-  printf '%s\n' "$kv" >> "$var_kv"
+  key=${kv%%=*}
+  val=${kv#*=}
+  pat="\$\{$(escape_regex "$key")\}"           # match literal ${key}
+  rep="$(escape_repl "$val")"                  # safe replacement
+  # re-run sed per variable; avoid external sed script
+  sed "s|$pat|$rep|g" "$tmp_in" > "$tmp_out"
+  mv "$tmp_out" "$tmp_in"
 done
-awk -F= '{k=$1; v=substr($0, index($0, "=")+1); map[k]=v}
-         END{for(k in map) print k"="map[k]}' "$var_kv" > "$dedup_kv"
 
-# 3) Build sed script (use [{] and [}] to match literal braces; avoid awk \& warning)
-awk -F= '
-function esc_pat(s){ gsub(/[][(){}.^$*+?|\\]/,"\\&",s); return s }
-function esc_rep(s){ gsub(/[\\&|]/,"\\&",s); return s }  # escape \, &, and delimiter |
-{
-  key=$1
-  val=substr($0, index($0,"=")+1)
-  pat="\\$[{]" esc_pat(key) "[}]"
-  rep=esc_rep(val)
-  print "s|" pat "|" rep "|g"
-}' "$dedup_kv" > "$sed_script"
-
-# 4) Apply replacements
-if [[ -s "$sed_script" ]]; then
-  rendered="$(sed -f "$sed_script" "$tmp_yaml")"
-else
-  rendered="$(cat "$tmp_yaml")"
-fi
-
-# 5) Strict mode: fail if any ${...} remains
-if [[ "$STRICT" -eq 1 ]] && grep -Eq '\$\{[A-Za-z0-9._-]+\}' <<<"$rendered"; then
+# --- strict: fail on any leftover ${...} ---
+if [[ "$STRICT" -eq 1 ]] && grep -Eq '\$\{[A-Za-z0-9._-]+\}' "$tmp_in"; then
   echo "ERROR: unresolved placeholders:" >&2
-  grep -oE '\$\{[A-Za-z0-9._-]+\}' <<<"$rendered" | sort -u >&2
+  grep -oE '\$\{[A-Za-z0-9._-]+\}' "$tmp_in" | sort -u >&2
   exit 3
 fi
 
-# 6) Output
+# --- output ---
 if [[ -n "$OUT" ]]; then
-  printf '%s' "$rendered" > "$OUT"
+  cp "$tmp_in" "$OUT"
 else
-  printf '%s' "$rendered"
+  cat "$tmp_in"
 fi
