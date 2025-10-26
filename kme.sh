@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Defaults (can override with -k)
-KUSTOMIZE_BIN="${KUSTOMIZE_BIN:-kustomize}"
+# Always use kubectl kustomize (override with KUBECTL_BIN if you really need to)
+KUBECTL_BIN="${KUBECTL_BIN:-kubectl}"
 
 PATH_ARG="."
 OUT=""
@@ -11,12 +11,11 @@ declare -a VAR_LINES=()
 
 usage() {
   cat <<'USAGE'
-kme [path] -v key=value [-v key=value ...] [-o out.yaml] [-s] [-k kustomize]
-  path            Path to kustomization (default: current dir)
-  -v key=value    Provide a variable used as ${key} in manifests (repeatable)
-  -o FILE         Write output to FILE instead of stdout
-  -s              Strict: error if any ${...} placeholder remains
-  -k BIN          Kustomize executable (default: kustomize)
+kme [path] -v key=value [-v key=value ...] [-o out.yaml] [-s]
+  path         Path to kustomization (default: current dir)
+  -v key=value Provide a variable used as ${key} in manifests (repeatable)
+  -o FILE      Write output to FILE instead of stdout
+  -s           Strict: error if any ${...} placeholder remains
 
 Example:
   kme /overlay/dev -v namespace=my-namespace -v host=nulltix.com -o all.yaml
@@ -27,17 +26,14 @@ USAGE
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
-    -v) shift; VAR_LINES+=("${1:?use -v key=value}");;
-    -v=*) VAR_LINES+=("${1#-v=}");;
-    -o) shift; OUT="${1:?use -o FILE}";;
-    -o=*) OUT="${1#-o=}";;
-    -s|--strict) STRICT=1;;
-    -k|--kustomize) shift; KUSTOMIZE_BIN="${1:?use -k BIN}";;
-    -k=*) KUSTOMIZE_BIN="${1#-k=}";;
+    -v) shift; VAR_LINES+=("${1:?use -v key=value}") ;;
+    -v=*) VAR_LINES+=("${1#-v=}") ;;
+    -o) shift; OUT="${1:?use -o FILE}" ;;
+    -o=*) OUT="${1#-o=}" ;;
+    -s|--strict) STRICT=1 ;;
     -*)
       echo "Unknown option: $1" >&2; usage; exit 2 ;;
     *)
-      # First non-flag arg = path
       if [[ "$PATH_ARG" == "." ]]; then PATH_ARG="$1"; else
         echo "Only one path allowed (got '$PATH_ARG' and '$1')." >&2; exit 2
       fi
@@ -46,31 +42,29 @@ while [[ $# -gt 0 ]]; do
   shift || true
 done
 
-# Temp files
+# Temps
 tmp_yaml="$(mktemp)"
 var_kv="$(mktemp)"
 dedup_kv="$(mktemp)"
 sed_script="$(mktemp)"
 trap 'rm -f "$tmp_yaml" "$var_kv" "$dedup_kv" "$sed_script"' EXIT
 
-# 1) Build manifests
-if ! command -v "$KUSTOMIZE_BIN" >/dev/null 2>&1; then
-  echo "ERROR: '$KUSTOMIZE_BIN' not found in PATH." >&2
+# 1) Build manifests with kubectl kustomize
+if ! command -v "$KUBECTL_BIN" >/dev/null 2>&1; then
+  echo "ERROR: '$KUBECTL_BIN' not found in PATH." >&2
   exit 127
 fi
-"$KUSTOMIZE_BIN" build "$PATH_ARG" > "$tmp_yaml"
+"$KUBECTL_BIN" kustomize "$PATH_ARG" > "$tmp_yaml"
 
 # 2) Gather vars (last one wins)
 for kv in "${VAR_LINES[@]:-}"; do
-  if [[ "$kv" != *"="* ]]; then
-    echo "ERROR: -v expects key=value (got '$kv')" >&2; exit 2
-  fi
+  [[ "$kv" == *"="* ]] || { echo "ERROR: -v expects key=value (got '$kv')" >&2; exit 2; }
   printf '%s\n' "$kv" >> "$var_kv"
 done
 awk -F= '{k=$1; v=substr($0, index($0, "=")+1); map[k]=v}
          END{for(k in map) print k"="map[k]}' "$var_kv" > "$dedup_kv"
 
-# 3) Build sed script to replace ${key} safely
+# 3) Build sed script to replace ${key} safely (keys may have - _ .)
 awk -F= '
 function esc_pat(s){gsub(/[][(){}.^$*+?|\\]/,"\\&",s);return s}
 function esc_rep(s){gsub(/[\&\\|]/,"\\&",s);return s}  # escape &, \, and delimiter |
