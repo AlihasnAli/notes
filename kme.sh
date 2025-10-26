@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Always use kubectl kustomize (override with KUBECTL_BIN if you really need to)
 KUBECTL_BIN="${KUBECTL_BIN:-kubectl}"
 
 PATH_ARG="."
@@ -12,7 +11,7 @@ declare -a VAR_LINES=()
 usage() {
   cat <<'USAGE'
 kme [path] -v key=value [-v key=value ...] [-o out.yaml] [-s]
-  path         Path to kustomization (default: current dir)
+  path         Path to kustomization (default: .)
   -v key=value Provide a variable used as ${key} in manifests (repeatable)
   -o FILE      Write output to FILE instead of stdout
   -s           Strict: error if any ${...} placeholder remains
@@ -64,14 +63,14 @@ done
 awk -F= '{k=$1; v=substr($0, index($0, "=")+1); map[k]=v}
          END{for(k in map) print k"="map[k]}' "$var_kv" > "$dedup_kv"
 
-# 3) Build sed script to replace ${key} safely (keys may have - _ .)
+# 3) Build sed script (use [{] and [}] to match literal braces; avoid awk \& warning)
 awk -F= '
-function esc_pat(s){gsub(/[][(){}.^$*+?|\\]/,"\\&",s);return s}
-function esc_rep(s){gsub(/[\&\\|]/,"\\&",s);return s}  # escape &, \, and delimiter |
+function esc_pat(s){ gsub(/[][(){}.^$*+?|\\]/,"\\&",s); return s }
+function esc_rep(s){ gsub(/[\\&|]/,"\\&",s); return s }  # escape \, &, and delimiter |
 {
   key=$1
   val=substr($0, index($0,"=")+1)
-  pat="\\$\\{" esc_pat(key) "\\}"
+  pat="\\$[{]" esc_pat(key) "[}]"
   rep=esc_rep(val)
   print "s|" pat "|" rep "|g"
 }' "$dedup_kv" > "$sed_script"
