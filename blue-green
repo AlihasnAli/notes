@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Blue-Green Deployment Architecture</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #0f172a;
+    color: #e2e8f0;
+    padding: 24px 16px;
+    min-height: 100vh;
+  }
+  h1 {
+    font-size: 22px;
+    text-align: center;
+    margin-bottom: 6px;
+    color: #f1f5f9;
+  }
+  .subtitle {
+    text-align: center;
+    color: #94a3b8;
+    font-size: 13px;
+    margin-bottom: 24px;
+  }
+  .stage {
+    background: #1e293b;
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 20px;
+    border: 1px solid #334155;
+  }
+  .stage-title {
+    font-size: 15px;
+    font-weight: 600;
+    margin-bottom: 14px;
+    color: #f1f5f9;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .stage-num {
+    background: #6366f1;
+    color: white;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+  }
+  .url-row {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+  .url-box {
+    padding: 10px 12px;
+    border-radius: 8px;
+    font-family: 'SF Mono', Menlo, monospace;
+    font-size: 12px;
+    text-align: center;
+    border: 2px solid;
+  }
+  .url-prod { background: #1e3a5f; border-color: #3b82f6; color: #93c5fd; }
+  .url-pvt { background: #422006; border-color: #f59e0b; color: #fcd34d; }
+  .arrow {
+    text-align: center;
+    color: #64748b;
+    font-size: 18px;
+    margin: 4px 0;
+  }
+  .services-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+  .service-box {
+    padding: 10px;
+    border-radius: 8px;
+    text-align: center;
+    font-size: 11px;
+    border: 1px dashed #475569;
+    background: #0f172a;
+  }
+  .service-label {
+    color: #94a3b8;
+    font-size: 10px;
+    margin-bottom: 4px;
+  }
+  .selector {
+    font-family: 'SF Mono', monospace;
+    color: #cbd5e1;
+    font-size: 11px;
+  }
+  .deployments {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .deploy-box {
+    padding: 14px 10px;
+    border-radius: 8px;
+    text-align: center;
+    border: 2px solid;
+  }
+  .blue { background: #1e3a5f; border-color: #3b82f6; }
+  .green { background: #14532d; border-color: #22c55e; }
+  .deploy-name { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+  .deploy-status { font-size: 10px; opacity: 0.85; }
+  .pods { font-size: 16px; margin-top: 6px; letter-spacing: 2px; }
+  .live-tag {
+    display: inline-block;
+    background: #22c55e;
+    color: #052e16;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 9px;
+    font-weight: 700;
+    margin-left: 4px;
+  }
+  .test-tag {
+    display: inline-block;
+    background: #f59e0b;
+    color: #422006;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 9px;
+    font-weight: 700;
+    margin-left: 4px;
+  }
+  .swap-note {
+    background: #422006;
+    border-left: 3px solid #f59e0b;
+    padding: 10px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    color: #fde68a;
+    margin-top: 10px;
+    line-height: 1.5;
+  }
+  .stage-2 .deploy-box.blue,
+  .stage-2 .url-prod { opacity: 0.5; }
+</style>
+</head>
+<body>
+
+<h1>Blue-Green Deployment</h1>
+<p class="subtitle">Two services, label-selector swap, zero downtime</p>
+
+<!-- STAGE 1: Initial state -->
+
+<div class="stage">
+  <div class="stage-title"><span class="stage-num">1</span> Before swap — Blue is live</div>
+
+  <div class="url-row">
+    <div class="url-box url-prod">app.company.com (prod users)</div>
+    <div class="url-box url-pvt">app-pvt.company.com (testers)</div>
+  </div>
+
+  <div class="arrow">↓</div>
+
+  <div class="services-row">
+    <div class="service-box">
+      <div class="service-label">prod-service</div>
+      <div class="selector">selector: blue</div>
+    </div>
+    <div class="service-box">
+      <div class="service-label">pvt-service</div>
+      <div class="selector">selector: green</div>
+    </div>
+  </div>
+
+  <div class="arrow">↓</div>
+
+  <div class="deployments">
+    <div class="deploy-box blue">
+      <div class="deploy-name">Deployment Blue<span class="live-tag">LIVE</span></div>
+      <div class="deploy-status">v1.0 — current release</div>
+      <div class="pods">🟦 🟦 🟦</div>
+    </div>
+    <div class="deploy-box green">
+      <div class="deploy-name">Deployment Green<span class="test-tag">TEST</span></div>
+      <div class="deploy-status">v1.1 — being tested</div>
+      <div class="pods">🟩 🟩 🟩</div>
+    </div>
+  </div>
+</div>
+
+<!-- STAGE 2: After swap -->
+
+<div class="stage stage-2">
+  <div class="stage-title"><span class="stage-num">2</span> After swap — Green promoted to prod</div>
+
+  <div class="url-row">
+    <div class="url-box url-prod">app.company.com (prod users)</div>
+    <div class="url-box url-pvt">app-pvt.company.com (testers)</div>
+  </div>
+
+  <div class="arrow">↓</div>
+
+  <div class="services-row">
+    <div class="service-box">
+      <div class="service-label">prod-service</div>
+      <div class="selector">selector: green ✏️</div>
+    </div>
+    <div class="service-box">
+      <div class="service-label">pvt-service</div>
+      <div class="selector">selector: blue (next)</div>
+    </div>
+  </div>
+
+  <div class="arrow">↓</div>
+
+  <div class="deployments">
+    <div class="deploy-box blue">
+      <div class="deploy-name">Deployment Blue</div>
+      <div class="deploy-status">v1.0 — idle / next test target</div>
+      <div class="pods">🟦 🟦 🟦</div>
+    </div>
+    <div class="deploy-box green">
+      <div class="deploy-name">Deployment Green<span class="live-tag">LIVE</span></div>
+      <div class="deploy-status">v1.1 — now in production</div>
+      <div class="pods">🟩 🟩 🟩</div>
+    </div>
+  </div>
+
+  <div class="swap-note">
+    <strong>The swap:</strong> a single <code>kubectl patch</code> on prod-service flips its selector from blue → green. New traffic routes instantly to green pods, in-flight requests on blue finish gracefully. No restart, no downtime.
+  </div>
+</div>
+
+</body>
+</html>
